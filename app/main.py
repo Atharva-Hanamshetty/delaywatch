@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app import models, schemas
 from app.database import Base, engine, get_db
+from app.services import stats
 
 Base.metadata.create_all(bind=engine)
 
@@ -33,3 +34,13 @@ def list_reports(train_number: str, db: Session = Depends(get_db)):
         .limit(50)
     )
     return db.scalars(stmt).all()
+
+
+@app.get("/trains/{train_number}/live")
+def live_delay(train_number: str, db: Session = Depends(get_db)):
+    return stats.get_live_delay(db, train_number)
+
+
+@app.get("/trains/{train_number}/reliability")
+def reliability(train_number: str, db: Session = Depends(get_db)):
+    return stats.get_reliability(db, train_number)
