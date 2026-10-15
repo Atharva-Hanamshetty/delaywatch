@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
@@ -6,11 +7,17 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from app import models, schemas
-from app.database import Base, engine, get_db
+from app.database import Base, SessionLocal, engine, get_db
+from app.seed import seed_demo_data
 from app.services import stats
 from app.services.ratelimit import limit_reports
 
 Base.metadata.create_all(bind=engine)
+
+# Only runs when SEED_DEMO_DATA=1 is set (we set it on the hosted demo).
+if os.environ.get("SEED_DEMO_DATA") == "1":
+    with SessionLocal() as session:
+        seed_demo_data(session)
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
