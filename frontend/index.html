@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DelayWatch</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      max-width: 760px; margin: 0 auto; padding: 20px;
+      background: #f3f5f9; color: #1c2430;
+    }
+    h1 { margin-bottom: 4px; }
+    .tagline { color: #5b6675; margin-top: 0; }
+    .card {
+      background: #fff; border-radius: 12px; padding: 18px;
+      margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+    .card h2 { margin-top: 0; font-size: 1.1rem; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    input {
+      padding: 10px; border: 1px solid #c9d1dc; border-radius: 8px;
+      font-size: 1rem; flex: 1; min-width: 110px;
+    }
+    button {
+      padding: 10px 18px; border: 0; border-radius: 8px;
+      background: #2456d6; color: #fff; font-size: 1rem; cursor: pointer;
+    }
+    button:hover { background: #1b45b0; }
+    .stats { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 14px; }
+    .stat { flex: 1; min-width: 200px; background: #eef2fa; border-radius: 10px; padding: 12px; }
+    .stat .label { font-size: 0.8rem; color: #5b6675; text-transform: uppercase; }
+    .stat .value { font-size: 1.5rem; font-weight: 700; margin: 4px 0; }
+    .stat .note { font-size: 0.85rem; color: #5b6675; }
+    .msg { margin: 10px 0 0; font-size: 0.95rem; }
+    .msg.err { color: #b3261e; }
+    .msg.ok { color: #1b7a3a; }
+    #chartBox { margin-top: 16px; }
+    footer { color: #8a94a3; font-size: 0.85rem; text-align: center; margin-top: 24px; }
+  </style>
+</head>
+<body>
+  <h1>DelayWatch</h1>
+  <p class="tagline">Crowdsourced Indian train delays, live.</p>
+
+  <div class="card">
+    <h2>Check a train</h2>
+    <div class="row">
+      <input id="trainInput" placeholder="Train number, e.g. 12604" maxlength="5">
+      <button id="checkBtn">Check</button>
+    </div>
+    <p id="checkMsg" class="msg"></p>
+
+    <div id="results" hidden>
+      <div class="stats">
+        <div class="stat">
+          <div class="label">Live delay</div>
+          <div class="value" id="liveValue"></div>
+          <div class="note" id="liveNote"></div>
+        </div>
+        <div class="stat">
+          <div class="label">Reliability</div>
+          <div class="value" id="relValue"></div>
+          <div class="note" id="relNote"></div>
+        </div>
+      </div>
+      <div id="chartBox">
+        <canvas id="chart" height="140"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Report a delay</h2>
+    <div class="row">
+      <input id="reportTrain" placeholder="Train number" maxlength="5">
+      <input id="reportStation" placeholder="Station code, e.g. MAS" maxlength="5">
+      <input id="reportDelay" type="number" placeholder="Minutes late" min="0" max="720">
+      <button id="reportBtn">Submit</button>
+    </div>
+    <p id="reportMsg" class="msg"></p>
+  </div>
+
+  <footer>DelayWatch is community powered. Reports are unverified.</footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let chart = null;
+
+    function setMsg(id, text, isError) {
+      const el = $(id);
+      el.textContent = text;
+      el.className = "msg " + (isError ? "err" : "ok");
+    }
+
+    // The server sends UTC times without a "Z", so add it before parsing.
+    function parseUtc(s) {
+      return new Date(s.endsWith("Z") ? s : s + "Z");
+    }
+
+    async function loadTrain() {
+      const train = $("trainInput").value.trim();
+      if (!/^\d{4,5}$/.test(train)) {
+        setMsg("checkMsg", "Enter a 4 or 5 digit train number.", true);
+        return;
+      }
+      setMsg("checkMsg", "Loading...", false);
+      try {
+        const [live, rel, reports] = await Promise.all([
+          fetch(`/trains/${train}/live`).then((r) => r.json()),
+          fetch(`/trains/${train}/reliability`).then((r) => r.json()),
+          fetch(`/trains/${train}/reports`).then((r) => r.json()),
+        ]);
+
+        $("liveValue").textContent =
+          live.live_delay_minutes === null
+            ? "No recent reports"
+            : live.live_delay_minutes + " min late";
+        $("liveNote").textContent =
+          `Based on ${live.based_on_reports} report(s) in the last ${live.window_hours} hours`;
+
+        $("relValue").textContent =
+          rel.reliability_score === null ? "No data yet" : rel.reliability_score + "% on time";
+        $("relNote").textContent = rel.total_reports
+          ? `Average delay ${rel.average_delay_minutes} min over ${rel.total_reports} report(s) in ${rel.window_days} days`
+          : "Be the first to report this train.";
+
+        drawChart(reports);
+        $("results").hidden = false;
+        setMsg("checkMsg", "", false);
+      } catch (err) {
+        setMsg("checkMsg", "Could not load data. Is the server running?", true);
+      }
+    }
+
+    function drawChart(reports) {
+      $("chartBox").hidden = reports.length === 0;
+      if (chart) { chart.destroy(); chart = null; }
+      if (reports.length === 0) return;
+      if (typeof Chart === "undefined") {
+        setMsg("checkMsg", "Chart library did not load. Check your internet connection.", true);
+        return;
+      }
+      const ordered = [...reports].reverse(); // oldest first
+      const labels = ordered.map((r) =>
+        parseUtc(r.reported_at).toLocaleString([], {
+          day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
+        })
+      );
+      chart = new Chart($("chart"), {
+        type: "line",
+        data: {
+          labels,
+          datasets: [{
+            label: "Reported delay (minutes)",
+            data: ordered.map((r) => r.delay_minutes),
+            tension: 0.2,
+          }],
+        },
+        options: {
+          responsive: true,
+          scales: { y: { beginAtZero: true, title: { display: true, text: "Minutes late" } } },
+        },
+      });
+    }
+
+    async function submitReport() {
+      const train = $("reportTrain").value.trim();
+      const station = $("reportStation").value.trim();
+      const delay = parseInt($("reportDelay").value, 10);
+
+      if (!/^\d{4,5}$/.test(train) || station.length < 2 || !Number.isInteger(delay)) {
+        setMsg("reportMsg", "Please fill in all three fields correctly.", true);
+        return;
+      }
+      try {
+        const res = await fetch("/reports", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ train_number: train, station_code: station, delay_minutes: delay }),
+        });
+        if (res.status === 201) {
+          setMsg("reportMsg", "Thanks! Your report was added.", false);
+          $("trainInput").value = train;
+          loadTrain();
+        } else if (res.status === 429) {
+          const data = await res.json();
+          setMsg("reportMsg", data.detail, true);
+        } else if (res.status === 422) {
+          setMsg("reportMsg",
+            "Check your inputs: train number is 4-5 digits, station code is 2-5 characters, delay is 0-720 minutes.",
+            true);
+        } else {
+          setMsg("reportMsg", "Something went wrong. Please try again.", true);
+        }
+      } catch (err) {
+        setMsg("reportMsg", "Could not reach the server.", true);
+      }
+    }
+
+    $("checkBtn").addEventListener("click", loadTrain);
+    $("reportBtn").addEventListener("click", submitReport);
+    $("trainInput").addEventListener("keydown", (e) => { if (e.key === "Enter") loadTrain(); });
+  </script>
+</body>
+</html>

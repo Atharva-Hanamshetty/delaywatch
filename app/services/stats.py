@@ -62,11 +62,13 @@ def get_live_delay(db: Session, train_number: str, now=None):
 def get_reliability(db: Session, train_number: str, now=None):
     now = now or utc_now()
     since = now - timedelta(days=RELIABILITY_DAYS)
-    stmt = select(DelayReport.delay_minutes).where(
+    stmt = select(DelayReport.delay_minutes, DelayReport.reported_at).where(
         DelayReport.train_number == train_number,
         DelayReport.reported_at >= since,
     )
-    delays = list(db.scalars(stmt))
+    items = [(row.delay_minutes, row.reported_at) for row in db.execute(stmt)]
+    items = remove_outliers(items)
+    delays = [delay for delay, _ in items]
 
     if not delays:
         return {

@@ -1,14 +1,25 @@
+from pathlib import Path
+
 from fastapi import Depends, FastAPI
+from fastapi.responses import FileResponse
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from app import models, schemas
 from app.database import Base, engine, get_db
 from app.services import stats
+from app.services.ratelimit import limit_reports
 
 Base.metadata.create_all(bind=engine)
 
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+
 app = FastAPI(title="DelayWatch", description="Crowdsourced train delay tracker")
+
+
+@app.get("/", include_in_schema=False)
+def home():
+    return FileResponse(FRONTEND_DIR / "index.html")
 
 
 @app.get("/health")
@@ -16,7 +27,12 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/reports", response_model=schemas.ReportOut, status_code=201)
+@app.post(
+    "/reports",
+    response_model=schemas.ReportOut,
+    status_code=201,
+    dependencies=[Depends(limit_reports)],
+)
 def create_report(payload: schemas.ReportCreate, db: Session = Depends(get_db)):
     report = models.DelayReport(**payload.model_dump())
     db.add(report)
